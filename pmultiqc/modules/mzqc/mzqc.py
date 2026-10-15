@@ -11,16 +11,23 @@ from statistics import median
 from typing import Any
 
 import numpy as np
+from multiqc import config
+from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
+from multiqc.plots import bargraph, heatmap, scatter, table
+from multiqc.types import SectionAlert
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import RobustScaler
 
-from multiqc import config
-from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
-from multiqc.plots import bargraph, heatmap, scatter, table
-from multiqc.types import SectionAlert
-
+from .tmt_reporting import (
+    CENTROID_ACCESSION,
+    PROFILE_ACCESSION,
+    TMT_CHANNEL_SOURCES,
+    TMT_METHOD_SOURCES,
+    tmt_overview_html,
+    tmt_report_data,
+)
 
 EXPERIMENT_GROUP_COLORS = ("#4C78A8", "#F58518", "#54A24B", "#E45756")
 _PROTEOMEXCHANGE_ACCESSION = re.compile(r"\bPXD\d+\b", re.IGNORECASE)
@@ -165,14 +172,23 @@ class MzQCRun:
 
     @property
     def provenance(self) -> str | None:
-        """Summarize provenance or evidence metrics without inventing metadata."""
+        """Show compact evidence labels; never inline structured mzQC payloads."""
         values: list[str] = []
+        has_tmt_evidence = False
         tokens = ("provenance", "evidence", "inferred", "unavailable")
         for metric in self.metrics:
             haystack = f"{metric.name} {metric.accession}".casefold()
-            if any(token in haystack for token in tokens):
-                value = _compact_value(metric.value)
-                values.append(f"{metric.name}: {value}")
+            if not any(token in haystack for token in tokens):
+                continue
+            if isinstance(metric.value, (dict, list)):
+                if metric.accession in (CENTROID_ACCESSION, PROFILE_ACCESSION):
+                    has_tmt_evidence = True
+                else:
+                    values.append(f"{metric.name}: structured value (see source mzQC)")
+                continue
+            values.append(f"{metric.name}: {_compact_value(metric.value)}")
+        if has_tmt_evidence:
+            values.append("TMT reporter evidence: see TMT QC sections")
         return " | ".join(dict.fromkeys(values)) or None
 
     def metrics_by_category(self) -> dict[str, list[MzQCMetric]]:
@@ -185,9 +201,13 @@ class MzQCRun:
 
 
 def _metric_from_json(item: Any) -> MzQCMetric:
-    """Validate and convert one JSON qualityMetric object."""
+    """Validate and convert one JSON qualityMetric object.
+
+    Invalid shapes are mzQC *data errors* (ValueError), not caller API errors.
+    The Run Overview loader intentionally catches ValueError and skips bad data.
+    """
     if not isinstance(item, dict):
-        raise ValueError("qualityMetrics entries must be JSON objects")
+        raise ValueError("qualityMetrics entries must be JSON objects")  # noqa: TRY004
     accession = item.get("accession")
     name = item.get("name")
     if not isinstance(accession, str) or not accession:
@@ -203,7 +223,9 @@ def _metric_from_json(item: Any) -> MzQCMetric:
         value=item.get("value"),
         unit_accession=unit_accession if isinstance(unit_accession, str) else None,
         unit_name=unit_name if isinstance(unit_name, str) else None,
-        description=item.get("description") if isinstance(item.get("description"), str) else None,
+        description=item.get("description")
+        if isinstance(item.get("description"), str)
+        else None,
     )
 
 
@@ -237,12 +259,15 @@ def _unique_name(base: str, used: set[str]) -> str:
     return result
 
 
-def parse_mzqc_document(path: str | Path, used_names: set[str] | None = None) -> list[MzQCRun]:
+def parse_mzqc_document(
+    path: str | Path, used_names: set[str] | None = None
+) -> list[MzQCRun]:
     """Parse every ``runQuality`` object in one mzQC document.
 
     The parser uses the mzQC JSON representation directly. Optional ``pymzqc`` is
     deliberately not required, keeping the reporting path lightweight and usable
-    wherever MultiQC itself is installed.
+    wherever MultiQC itself is installed. Malformed JSON structure raises
+    ValueError so the file loader can skip it without crashing the report.
     """
 
     source_path = Path(path)
@@ -251,7 +276,7 @@ def parse_mzqc_document(path: str | Path, used_names: set[str] | None = None) ->
 
     root = document.get("mzQC") if isinstance(document, dict) else None
     if not isinstance(root, dict):
-        raise ValueError("missing mzQC root object")
+        raise ValueError("missing mzQC root object")  # noqa: TRY004
 
     run_qualities = root.get("runQualities")
     if run_qualities is None:
@@ -260,19 +285,19 @@ def parse_mzqc_document(path: str | Path, used_names: set[str] | None = None) ->
         # should use the specification-defined plural ``runQualities`` key.
         run_qualities = root.get("runQuality")
     if not isinstance(run_qualities, list):
-        raise ValueError("mzQC document has no runQualities/runQuality array")
+        raise ValueError("mzQC document has no runQualities/runQuality array")  # noqa: TRY004
 
     names = used_names if used_names is not None else set()
     parsed: list[MzQCRun] = []
     for index, run_quality in enumerate(run_qualities, start=1):
         if not isinstance(run_quality, dict):
-            raise ValueError(f"runQuality #{index} is not a JSON object")
+            raise ValueError(f"runQuality #{index} is not a JSON object")  # noqa: TRY004
         metadata = run_quality.get("metadata")
         if not isinstance(metadata, dict):
             metadata = {}
         quality_metrics = run_quality.get("qualityMetrics", [])
         if not isinstance(quality_metrics, list):
-            raise ValueError(f"runQuality #{index} has invalid qualityMetrics")
+            raise ValueError(f"runQuality #{index} has invalid qualityMetrics")  # noqa: TRY004
         metrics = tuple(_metric_from_json(item) for item in quality_metrics)
         label = _unique_name(_run_label(run_quality, source_path, index), names)
         parsed.append(
@@ -318,9 +343,15 @@ def _configure_dataset_report_metadata(runs: list[MzQCRun]) -> list[str]:
         if len(accessions) == 1:
             config.title = f"{accessions[0]} — mzQC Quality Control"
         else:
-            config.title = f"mzQC Quality Control — {len(accessions)} ProteomeXchange datasets"
+            config.title = (
+                f"mzQC Quality Control — {len(accessions)} ProteomeXchange datasets"
+            )
 
-    label = "ProteomeXchange accession" if len(accessions) == 1 else "ProteomeXchange accessions"
+    label = (
+        "ProteomeXchange accession"
+        if len(accessions) == 1
+        else "ProteomeXchange accessions"
+    )
     value = ", ".join(accessions)
     header_info = list(getattr(config, "report_header_info", None) or [])
     if not any(isinstance(item, dict) and label in item for item in header_info):
@@ -335,19 +366,43 @@ def classify_metric(metric: MzQCMetric) -> str:
     text = f"{metric.name} {metric.accession}".casefold()
     if any(
         token in text
-        for token in ("mass error", "mass accuracy", "precision", "tolerance", "delta m")
+        for token in (
+            "mass error",
+            "mass accuracy",
+            "precision",
+            "tolerance",
+            "delta m",
+        )
     ):
         return "mass"
     if any(
         token in text
-        for token in ("acquisition", "isolation", "duty cycle", "target", "charge", "polarity")
+        for token in (
+            "acquisition",
+            "isolation",
+            "duty cycle",
+            "target",
+            "charge",
+            "polarity",
+        )
     ):
         return "acquisition"
-    if any(token in text for token in ("chromat", "tic", "retention", "rt_", " rt", "xic")):
+    if any(
+        token in text for token in ("chromat", "tic", "retention", "rt_", " rt", "xic")
+    ):
         return "chromatography"
     if any(
         token in text
-        for token in ("ms1", "ms2", "spectrum", "spectra", "peak", "m/z", "mz range", "scan rate")
+        for token in (
+            "ms1",
+            "ms2",
+            "spectrum",
+            "spectra",
+            "peak",
+            "m/z",
+            "mz range",
+            "scan rate",
+        )
     ):
         return "spectra"
     return "other"
@@ -355,8 +410,13 @@ def classify_metric(metric: MzQCMetric) -> str:
 
 def _is_two_number_tuple(value: Any) -> bool:
     """Return whether a JSON value is a two-endpoint numeric range."""
-    return isinstance(value, list) and len(value) == 2 and all(
-        isinstance(item, (int, float)) and not isinstance(item, bool) for item in value
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool)
+            for item in value
+        )
     )
 
 
@@ -409,7 +469,6 @@ def _metric_unit_suffix(metric: MzQCMetric) -> str | None:
     return None
 
 
-
 def _is_run_level_tolerance_general_stat(
     key: str,
     header: dict[str, Any],
@@ -437,19 +496,14 @@ def _without_run_level_tolerance_general_stats(
         return data, headers
 
     filtered_headers = {
-        key: header
-        for key, header in headers.items()
-        if key not in excluded
+        key: header for key, header in headers.items() if key not in excluded
     }
     filtered_data = {
-        sample: {
-            key: value
-            for key, value in row.items()
-            if key not in excluded
-        }
+        sample: {key: value for key, value in row.items() if key not in excluded}
         for sample, row in data.items()
     }
     return filtered_data, filtered_headers
+
 
 def _metric_data(
     runs: list[MzQCRun],
@@ -558,13 +612,19 @@ MASS_SHIFT_CLASS_LABELS = {
 def _metric_named(run: MzQCRun, name: str) -> MzQCMetric | None:
     """Return the first metric with the exact report-contract name."""
     wanted = name.casefold()
-    return next((metric for metric in run.metrics if metric.name.casefold() == wanted), None)
+    return next(
+        (metric for metric in run.metrics if metric.name.casefold() == wanted), None
+    )
 
 
 def _structured_value(run: MzQCRun, name: str, expected: type) -> Any:
     """Return one structured metric only when it has the expected JSON shape."""
     metric = _metric_named(run, name)
-    return metric.value if metric is not None and isinstance(metric.value, expected) else None
+    return (
+        metric.value
+        if metric is not None and isinstance(metric.value, expected)
+        else None
+    )
 
 
 def _finite_number(value: Any) -> int | float | None:
@@ -602,29 +662,51 @@ def _mass_accuracy_report_data(
         fragment_tolerance_da = _structured_value(
             run, MASS_ERROR_METRIC_NAMES["fragment_tolerance_da"], dict
         )
-        diagnostics = _structured_value(run, MASS_ERROR_METRIC_NAMES["diagnostics"], dict)
+        diagnostics = _structured_value(
+            run, MASS_ERROR_METRIC_NAMES["diagnostics"], dict
+        )
 
         row: dict[str, Any] = {}
         fields = {
-            "precursor_sigma_ppm": _nested_number(precursor_precision, "single_measurement_sigma"),
+            "precursor_sigma_ppm": _nested_number(
+                precursor_precision, "single_measurement_sigma"
+            ),
             "precursor_tolerance_ppm": _nested_number(
                 precursor_tolerance, "suggested_tolerance"
             ),
-            "fragment_sigma_ppm": _nested_number(fragment_precision, "single_measurement_sigma"),
-            "fragment_tolerance_ppm": _nested_number(fragment_tolerance, "suggested_tolerance"),
-            "fragment_tolerance_da": _nested_number(fragment_tolerance_da, "suggested_tolerance"),
-            "precursor_repeat_pairs": _nested_number(diagnostics, "precursor_paired_spectra"),
-            "precursor_clusters": _nested_number(diagnostics, "precursor_clusters_used"),
+            "fragment_sigma_ppm": _nested_number(
+                fragment_precision, "single_measurement_sigma"
+            ),
+            "fragment_tolerance_ppm": _nested_number(
+                fragment_tolerance, "suggested_tolerance"
+            ),
+            "fragment_tolerance_da": _nested_number(
+                fragment_tolerance_da, "suggested_tolerance"
+            ),
+            "precursor_repeat_pairs": _nested_number(
+                diagnostics, "precursor_paired_spectra"
+            ),
+            "precursor_clusters": _nested_number(
+                diagnostics, "precursor_clusters_used"
+            ),
             "fragment_pairs": _nested_number(diagnostics, "fragment_pairs"),
         }
         for key, value in fields.items():
             if value is not None:
                 row[key] = value
 
-        regime = None if diagnostics is None else diagnostics.get("fragment_resolution_regime")
+        regime = (
+            None
+            if diagnostics is None
+            else diagnostics.get("fragment_resolution_regime")
+        )
         if isinstance(regime, str) and regime:
             row["fragment_resolution_regime"] = regime
-        confidence = None if precursor_tolerance is None else precursor_tolerance.get("confidence")
+        confidence = (
+            None
+            if precursor_tolerance is None
+            else precursor_tolerance.get("confidence")
+        )
         if isinstance(confidence, str) and confidence:
             row["precursor_tolerance_confidence"] = confidence
         fragment_payload = fragment_tolerance or fragment_tolerance_da
@@ -677,7 +759,9 @@ def _mass_accuracy_detail_description(data: dict[str, dict[str, Any]]) -> str:
     return description
 
 
-def _mass_accuracy_summary_text(data: dict[str, dict[str, Any]], total_runs: int) -> str:
+def _mass_accuracy_summary_text(
+    data: dict[str, dict[str, Any]], total_runs: int
+) -> str:
     """Create a compact cohort summary without inventing unavailable tolerances."""
     precursor = [
         float(row["precursor_tolerance_ppm"])
@@ -724,7 +808,9 @@ def _experiment_group_features(
         fragment_unit = (
             "ppm"
             if "fragment_tolerance_ppm" in row
-            else "Da" if "fragment_tolerance_da" in row else ""
+            else "Da"
+            if "fragment_tolerance_da" in row
+            else ""
         )
         fragment_value = row.get(
             "fragment_tolerance_ppm", row.get("fragment_tolerance_da")
@@ -759,7 +845,10 @@ def _scaled_feature_matrix(
             if isinstance(features[name].get(key), (int, float))
             and float(features[name][key]) > 0
         ]
-        if len(observed) < minimum_observed or len({round(value, 12) for value in observed}) < 2:
+        if (
+            len(observed) < minimum_observed
+            or len({round(value, 12) for value in observed}) < 2
+        ):
             continue
         fill = median(observed)
         column = [
@@ -780,7 +869,9 @@ def _scaled_feature_matrix(
     keep = np.ptp(scaled, axis=0) > 1e-12
     if not np.any(keep):
         return None
-    return scaled[:, keep], [key for key, flag in zip(selected, keep, strict=True) if flag]
+    return scaled[:, keep], [
+        key for key, flag in zip(selected, keep, strict=True) if flag
+    ]
 
 
 def _supported_multivariate_partition(
@@ -819,7 +910,11 @@ def _supported_multivariate_partition(
     for k in range(2, max_k + 1):
         labels = KMeans(n_clusters=k, random_state=0, n_init=20).fit_predict(matrix)
         buckets = [
-            [name for name, label in zip(group, labels, strict=True) if int(label) == cluster]
+            [
+                name
+                for name, label in zip(group, labels, strict=True)
+                if int(label) == cluster
+            ]
             for cluster in range(k)
         ]
         if any(len(bucket) < min_group for bucket in buckets):
@@ -893,7 +988,9 @@ def _categorical_experiment_groups(
     for key in ("fragment_unit", "fragment_regime", "instrument", "acquisition"):
         updated: list[list[str]] = []
         for group in groups:
-            partition = _supported_categorical_partition(group, features, key, min_group)
+            partition = _supported_categorical_partition(
+                group, features, key, min_group
+            )
             if partition is not None and len(updated) + len(partition) <= max_groups:
                 updated.extend(partition)
                 evidence.append(f"categorical {key} split")
@@ -1013,7 +1110,11 @@ def _experiment_group_summary(
         summary["isolation_median_th"] = median(isolation)
 
     instruments = sorted(
-        {runs_by_name[name].instrument for name in group if runs_by_name[name].instrument}
+        {
+            runs_by_name[name].instrument
+            for name in group
+            if runs_by_name[name].instrument
+        }
     )
     acquisitions = sorted(
         {
@@ -1060,6 +1161,7 @@ def _run_group_assignments(
         )
     return assignments, summaries, evidence
 
+
 def _experiment_group_pca_data(
     runs: list[MzQCRun], assignments: dict[str, str]
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str], tuple[float, float]] | None:
@@ -1075,7 +1177,9 @@ def _experiment_group_pca_data(
     pca = PCA(n_components=2, random_state=0)
     coordinates = pca.fit_transform(matrix)
     plot_data: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    groups = list(dict.fromkeys(assignments.get(name, "Experiment group 1") for name in names))
+    groups = list(
+        dict.fromkeys(assignments.get(name, "Experiment group 1") for name in names)
+    )
     color_by_group = {
         group: EXPERIMENT_GROUP_COLORS[index % len(EXPERIMENT_GROUP_COLORS)]
         for index, group in enumerate(groups)
@@ -1094,7 +1198,9 @@ def _experiment_group_pca_data(
     return dict(plot_data), feature_keys, variance
 
 
-def _beta_prevalence_probability(hits: int, runs: int, threshold: float = 0.10) -> float:
+def _beta_prevalence_probability(
+    hits: int, runs: int, threshold: float = 0.10
+) -> float:
     """Return P(prevalence > threshold | hits, runs, Beta(1,1))."""
     if runs <= 0 or hits < 0 or hits > runs:
         return 0.0
@@ -1185,7 +1291,10 @@ def _ptm_family_row(
     candidates: list[str],
 ) -> dict[str, Any] | None:
     """Build one PTM-compatible family summary row when annotation evidence exists."""
-    if str(representative.get("classification") or "") != "putative-ptm" or not candidates:
+    if (
+        str(representative.get("classification") or "") != "putative-ptm"
+        or not candidates
+    ):
         return None
     run_hits = {item[1] for item in family}
     high_support_runs = {
@@ -1264,6 +1373,7 @@ def _mass_shift_family_context(
     ptm_rows.sort(key=_family_sort_key, reverse=True)
     return record_context, ptm_rows, _bounded_high_support_families(strict_rows)
 
+
 def _candidate_family_counts(
     rows: list[dict[str, Any]], limit: int = 8
 ) -> dict[str, int]:
@@ -1305,7 +1415,7 @@ def _pie_chart_html(counts: dict[str, int], title: str) -> str:
         segments.append(
             f'<circle cx="18" cy="18" r="15.9155" fill="transparent" '
             f'stroke="{colour}" stroke-width="9" stroke-dasharray="{dash:.4f} '
-            f'{100.0-dash:.4f}" stroke-dashoffset="{offset:.4f}" />'
+            f'{100.0 - dash:.4f}" stroke-dashoffset="{offset:.4f}" />'
         )
         offset -= dash
         legend.append(
@@ -1492,14 +1602,15 @@ def _mass_shift_summary_table(report: dict[str, Any]) -> dict[str, dict[str, Any
     """Create one report-level summary row for the bounded mass-shift scout output."""
     diagnostics = report["diagnostics"]
     raw_clusters = sum(
-        int(value.get("raw_recurrent_clusters", 0) or 0) for value in diagnostics.values()
-    )
-    profile_ms2 = sum(
-        int(value.get("explicit_profile_ms2", 0) or 0)
+        int(value.get("raw_recurrent_clusters", 0) or 0)
         for value in diagnostics.values()
     )
+    profile_ms2 = sum(
+        int(value.get("explicit_profile_ms2", 0) or 0) for value in diagnostics.values()
+    )
     profile_failures = sum(
-        int(value.get("profile_peak_pick_failures", 0) or 0) for value in diagnostics.values()
+        int(value.get("profile_peak_pick_failures", 0) or 0)
+        for value in diagnostics.values()
     )
     classes: Counter[str] = report["class_counts"]
     confidence: Counter[str] = report["confidence_counts"]
@@ -1548,7 +1659,9 @@ def _mass_shift_cluster_table(
             "alternative_candidates": "; ".join(candidate_names[1:]),
             "pair_support": int(record.get("pair_support", 0) or 0),
             "unique_spectra": int(record.get("unique_spectrum_support", 0) or 0),
-            "spectral_similarity": _finite_number(record.get("median_spectral_similarity")),
+            "spectral_similarity": _finite_number(
+                record.get("median_spectral_similarity")
+            ),
             "confidence": str(record.get("confidence") or ""),
             "family_runs": context.get("family_runs"),
             "run_prevalence": context.get("run_prevalence"),
@@ -1720,11 +1833,14 @@ class MzQCModule(BaseMultiqcModule):
             ),
         )
 
-        self._add_category_table("Chromatography", "mzqc-chromatography", {"chromatography"})
+        self._add_category_table(
+            "Chromatography", "mzqc-chromatography", {"chromatography"}
+        )
         self._add_category_table("MS1 / MS2 Summary", "mzqc-spectra", {"spectra"})
         self._add_category_table("Acquisition", "mzqc-acquisition", {"acquisition"})
         self._add_mass_accuracy_sections()
         self._add_mass_shift_sections()
+        self._add_tmt_sections()
         self._add_category_table(
             "Other Mass Accuracy / Precision Metrics",
             "mzqc-mass-other",
@@ -1771,7 +1887,9 @@ class MzQCModule(BaseMultiqcModule):
             }
         return result
 
-    def _add_category_table(self, title: str, anchor: str, categories: set[str]) -> None:
+    def _add_category_table(
+        self, title: str, anchor: str, categories: set[str]
+    ) -> None:
         """Add a metric table when at least one run has data for the category."""
         data, headers = _metric_data(self.runs, categories)
         if not any(row for row in data.values()):
@@ -1798,6 +1916,35 @@ class MzQCModule(BaseMultiqcModule):
             ),
         )
 
+    def _add_tmt_sections(self) -> None:
+        """Render one selected TMT reference view; export all mzQC-derived rows."""
+        report = tmt_report_data(self.runs)
+        for warning in report.invalid_metrics:
+            self.log.warning("Skipping invalid prideQC TMT mzQC evidence: %s", warning)
+        if not report.method_rows:
+            return
+
+        self.add_section(
+            name="TMT QC — Reporter Screening",
+            anchor="mzqc-tmt-overview",
+            description=(
+                "Select a reference catalogue, MS level and centroid/profile representation. "
+                "The default TMT11/MS3/centroid view (when present) is a **display preference**, "
+                "not a kit identification. All values originate in structured mzQC metrics; "
+                "overlapping catalogues and MS levels are never pooled."
+            ),
+            content=tmt_overview_html(report),
+        )
+        self.write_data_file(report.method_rows, "multiqc_mzqc_tmt_methods")
+        self.write_data_file(report.channel_rows, "multiqc_mzqc_tmt_channels")
+        self.write_data_file(
+            {
+                "method_columns": TMT_METHOD_SOURCES,
+                "channel_columns": TMT_CHANNEL_SOURCES,
+            },
+            "multiqc_mzqc_tmt_source_map",
+        )
+
     def _add_mass_accuracy_sections(self) -> None:
         """Render prideQC's frozen mass-precision/tolerance evidence when present."""
         data, ppm_plot = _mass_accuracy_report_data(self.runs)
@@ -1818,7 +1965,10 @@ class MzQCModule(BaseMultiqcModule):
                     "format": "{:,.2f}",
                 },
                 "fragment_median": {"title": "Fragment median", "format": "{:,.3f}"},
-                "fragment_common": {"title": "Fragment common/max", "format": "{:,.3f}"},
+                "fragment_common": {
+                    "title": "Fragment common/max",
+                    "format": "{:,.3f}",
+                },
                 "fragment_unit": {"title": "Fragment unit"},
                 "fragment_regime": {"title": "Fragment regime"},
                 "run_duration_median_min": {
@@ -2039,7 +2189,6 @@ class MzQCModule(BaseMultiqcModule):
         if general_data:
             self.general_stats_addcols(general_data, headers)
 
-
     def _add_mass_shift_sections(self) -> None:
         """Render bounded recurrent mass-shift evidence without implying PTM identification."""
         report = _mass_shift_report_data(self.runs)
@@ -2086,7 +2235,9 @@ class MzQCModule(BaseMultiqcModule):
 
         high_support_rows = {
             f"{index:03d}": row
-            for index, row in enumerate(report.get("high_support_families", []), start=1)
+            for index, row in enumerate(
+                report.get("high_support_families", []), start=1
+            )
         }
         if high_support_rows:
             self.add_section(
@@ -2110,8 +2261,14 @@ class MzQCModule(BaseMultiqcModule):
                             "suffix": " Da",
                             "format": "{:,.5f}",
                         },
-                        "family_runs": {"title": "Supporting runs", "format": "{:,.0f}"},
-                        "run_prevalence": {"title": "Run prevalence", "format": "{:,.1%}"},
+                        "family_runs": {
+                            "title": "Supporting runs",
+                            "format": "{:,.0f}",
+                        },
+                        "run_prevalence": {
+                            "title": "Run prevalence",
+                            "format": "{:,.1%}",
+                        },
                         "high_support_run_fraction": {
                             "title": "High-support runs",
                             "format": "{:,.1%}",
@@ -2142,7 +2299,9 @@ class MzQCModule(BaseMultiqcModule):
             )
 
         all_ptm_counts = _candidate_family_counts(report.get("ptm_families", []))
-        high_ptm_counts = _candidate_family_counts(report.get("high_support_families", []))
+        high_ptm_counts = _candidate_family_counts(
+            report.get("high_support_families", [])
+        )
         if all_ptm_counts or high_ptm_counts:
             pie_blocks = []
             if all_ptm_counts:
@@ -2151,7 +2310,9 @@ class MzQCModule(BaseMultiqcModule):
                 )
             if high_ptm_counts:
                 pie_blocks.append(
-                    _pie_chart_html(high_ptm_counts, "Strict high-support families (≥90% of runs)")
+                    _pie_chart_html(
+                        high_ptm_counts, "Strict high-support families (≥90% of runs)"
+                    )
                 )
             self.add_section(
                 name="Modification Family Composition",
@@ -2297,14 +2458,20 @@ class MzQCModule(BaseMultiqcModule):
                         "candidate": {"title": "Mass-compatible candidate"},
                         "alternative_candidates": {"title": "Alternative candidates"},
                         "pair_support": {"title": "Pair support", "format": "{:,.0f}"},
-                        "unique_spectra": {"title": "Unique spectra", "format": "{:,.0f}"},
+                        "unique_spectra": {
+                            "title": "Unique spectra",
+                            "format": "{:,.0f}",
+                        },
                         "spectral_similarity": {
                             "title": "Median spectral similarity",
                             "format": "{:,.3f}",
                         },
                         "confidence": {"title": "Support tier"},
                         "family_runs": {"title": "Family runs", "format": "{:,.0f}"},
-                        "run_prevalence": {"title": "Run prevalence", "format": "{:,.1%}"},
+                        "run_prevalence": {
+                            "title": "Run prevalence",
+                            "format": "{:,.1%}",
+                        },
                         "raw_prevalence_probability": {
                             "title": "P(prevalence > 10%)",
                             "description": (

@@ -1,0 +1,115 @@
+{
+  "mzQC": {
+    "version": "1.0.0",
+    "creationDate": "2026-10-15T00:00:00Z",
+    "runQualities": [
+      {
+        "metadata": {
+          "label": "prideqc-tmt-demo.raw",
+          "inputFiles": [{"name": "prideqc-tmt-demo.raw", "location": "file:///prideqc-tmt-demo.raw"}],
+          "analysisSoftware": []
+        },
+        "qualityMetrics": [
+          {
+            "accession": "QCPRIDE:D9D5612FDC49DA507254",
+            "name": "TMT reporter-ion channel evidence",
+            "value": {
+              "schema_version": 1,
+              "scientific_status": "EXPLORATORY_NOT_FOR_AUTOMATIC_SDRF_WRITEBACK",
+              "pyopenms_version": "3.6.0.dev20260910",
+              "channel_catalog_source": "runtime pyOpenMS quantitation method getChannelInformation()",
+              "parameters": {"ppm": 10.0, "min_relative_intensity_fraction_of_spectrum_base_peak": 0.001, "minimum_channel_hits_for_reporter_positive_spectrum": 3},
+              "unavailable_methods": {},
+              "levels": {
+                "MS2": {
+                  "spectra_scanned": 12, "centroid_spectra": 10, "profile_skipped": 2, "unknown_skipped": 0,
+                  "methods": {
+                    "TMT6": {
+                      "reporter_positive_spectra": 0,
+                      "positive_fraction_of_centroid": 0.0,
+                      "channels": [
+                        {"channel":"126", "expected_mz":126.1277, "spectra_with_hit":9, "fraction_of_centroid_spectra":0.9, "uncorrected_total_matched_intensity":9000.0, "mean_absolute_mass_error_ppm":1.2},
+                        {"channel":"127", "expected_mz":127.1248, "spectra_with_hit":0, "fraction_of_centroid_spectra":0.0, "uncorrected_total_matched_intensity":0.0, "mean_absolute_mass_error_ppm":null}
+                      ]
+                    },
+                    "TMT11": {
+                      "reporter_positive_spectra": 0,
+                      "positive_fraction_of_centroid": 0.0,
+                      "channels": [
+                        {"channel":"126", "expected_mz":126.1277, "spectra_with_hit":9, "fraction_of_centroid_spectra":0.9, "uncorrected_total_matched_intensity":9000.0, "mean_absolute_mass_error_ppm":1.2}
+                      ]
+                    }
+                  }
+                },
+                "MS3": {
+                  "spectra_scanned": 0, "centroid_spectra": 0, "profile_skipped": 0, "unknown_skipped": 0,
+                  "methods": {
+                    "TMT6": {
+                      "reporter_positive_spectra": 0, "positive_fraction_of_centroid": null,
+                      "channels": [
+                        {"channel":"126", "expected_mz":126.1277, "spectra_with_hit":0, "fraction_of_centroid_spectra":null, "uncorrected_total_matched_intensity":0.0, "mean_absolute_mass_error_ppm":null}
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "accession": "QCPRIDE:94464A800A02DA828D7E",
+            "name": "TMT experimental profile reporter-ion evidence",
+            "value": {
+              "schema_version": 1,
+              "scientific_status": "EXPERIMENTAL_PROFILE_PEAK_PICKING_NOT_FOR_SDRF_WRITEBACK",
+              "peak_picking_method": "OpenMS PeakPickerHiRes, ephemeral 1 Da padded reporter region",
+              "profile_peak_picking_mz_range": [125.0, 135.0],
+              "pyopenms_version": "3.6.0.dev20260910",
+              "channel_catalog_source": "runtime pyOpenMS quantitation method getChannelInformation()",
+              "parameters": {"ppm": 10.0, "min_relative_intensity_fraction_of_spectrum_base_peak": 0.001, "minimum_channel_hits_for_reporter_positive_spectrum": 3},
+              "unavailable_methods": {},
+              "levels": {
+                "MS2": {
+                  "profile_spectra_scanned": 2,
+                  "profile_spectra_evaluable": 2,
+                  "profile_spectra_without_reporter_region": 0,
+                  "profile_spectra_invalid_samples": 0,
+                  "profile_peak_picker_failures": 0,
+                  "profile_spectra_with_no_picked_peaks": 0,
+                  "non_profile_spectra_excluded": 10,
+                  "methods": {
+                    "TMT6": {
+                      "reporter_positive_spectra": 0,
+                      "positive_fraction_of_evaluable_profile": 0.0,
+                      "channels": [
+                        {"channel":"126", "expected_mz":126.1277, "spectra_with_hit":1, "fraction_of_evaluable_profile_spectra":0.5, "profile_spectra_with_local_mz_sampling":2, "fraction_of_locally_sampled_profile_spectra":0.5, "uncorrected_total_matched_intensity":550.0, "mean_absolute_mass_error_ppm":1.8},
+                        {"channel":"127", "expected_mz":127.1248, "spectra_with_hit":0, "fraction_of_evaluable_profile_spectra":0.0, "profile_spectra_with_local_mz_sampling":0, "fraction_of_locally_sampled_profile_spectra":null, "uncorrected_total_matched_intensity":0.0, "mean_absolute_mass_error_ppm":null}
+                      ]
+                    }
+                  }
+                },
+                "MS3": {
+                  "profile_spectra_scanned": 0,
+                  "profile_spectra_evaluable": 0,
+                  "profile_spectra_without_reporter_region": 0,
+                  "profile_spectra_invalid_samples": 0,
+                  "profile_peak_picker_failures": 0,
+                  "profile_spectra_with_no_picked_peaks": 0,
+                  "non_profile_spectra_excluded": 0,
+                  "methods": {
+                    "TMT6": {
+                      "reporter_positive_spectra": 0,
+                      "positive_fraction_of_evaluable_profile": null,
+                      "channels": [
+                        {"channel":"126", "expected_mz":126.1277, "spectra_with_hit":0, "fraction_of_evaluable_profile_spectra":null, "profile_spectra_with_local_mz_sampling":0, "fraction_of_locally_sampled_profile_spectra":null, "uncorrected_total_matched_intensity":0.0, "mean_absolute_mass_error_ppm":null}
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

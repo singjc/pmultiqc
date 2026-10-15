@@ -86,3 +86,7 @@ This page lists all quality control metrics computed by pmultiqc, organized by d
 | **Peptide Intensity** | Quantification signal distribution for MHC-bound peptides | multiqc_peptide_intensity.txt |
 | **Percolator Output** | Post-processing score distribution from Percolator | percolator_plot.txt |
 | **Peptide Length Distribution** | Sequence length histogram (MHC-I: 8–11 aa; MHC-II: 13–25 aa) | multiqc_length_dist.txt |
+
+## prideQC TMT Reporter-Ion mzQC Screening
+
+When prideQC's opt-in centroid/profile TMT reporters are present in the mzQC input, the `mzqc` module visualizes their existing method-level and per-channel evidence (MS2/MS3 separately) without recomputing spectra matches. The selected catalogue/MS-level/representation view shows a run summary and channel-detection heatmap, with detailed counts, exclusions, intensity and mass error in an advanced disclosure. The full dataset remains available in mzQC and the MultiQC data exports. All TMT QC display values come from the two structured `QCPRIDE` mzQC metrics; percentage conversion is display-only. See [TMT reporter-ion mzQC reporting](../user-guide/mzqc-tmt-reporting.md) for the exact evidence contract and limitations.
