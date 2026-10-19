@@ -5,7 +5,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from html import escape
-from math import ceil, comb, log10
+from math import ceil, comb, isfinite, log10
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -83,6 +83,39 @@ class MzQCRun:
             elif isinstance(location, str) and location:
                 names.append(Path(location.split("?")[0]).name)
         return names
+
+    @property
+    def faims_compensation_voltages(self) -> str | None:
+        """Display only the recorded PSI-MS FAIMS values from input-file metadata."""
+        values: list[str] = []
+        for item in self.input_files:
+            if not isinstance(item, dict):
+                continue
+            properties = item.get("fileProperties", [])
+            if not isinstance(properties, list):
+                continue
+            for prop in properties:
+                if (
+                    not isinstance(prop, dict)
+                    or prop.get("accession") != "MS:1001581"
+                ):
+                    continue
+                unit = prop.get("unit")
+                if isinstance(unit, dict) and unit.get("accession") not in (
+                    None, "UO:0000218"
+                ):
+                    continue
+                value = prop.get("value")
+                if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                    continue
+                shown = str(value).strip()
+                try:
+                    valid = isfinite(float(shown))
+                except ValueError:
+                    valid = False
+                if valid:
+                    values.append(f"{shown} V")
+        return "; ".join(dict.fromkeys(values)) or None
 
     @property
     def proteomexchange_accession(self) -> str | None:
@@ -363,6 +396,8 @@ def _configure_dataset_report_metadata(runs: list[MzQCRun]) -> list[str]:
 
 def classify_metric(metric: MzQCMetric) -> str:
     """Classify by the metric's declared name/accession without inventing values."""
+    if metric.accession == "MS:4000067":
+        return "chromatography"
     text = f"{metric.name} {metric.accession}".casefold()
     if any(
         token in text
@@ -381,6 +416,7 @@ def classify_metric(metric: MzQCMetric) -> str:
             "acquisition",
             "isolation",
             "duty cycle",
+            "cycle time",
             "target",
             "charge",
             "polarity",
@@ -429,15 +465,11 @@ def _metric_key(metric: MzQCMetric, occurrence: int = 1) -> str:
 def _metric_display_title(metric: MzQCMetric, endpoint: str | None = None) -> str:
     """Return compact user-facing titles while preserving mzQC semantics."""
     name = metric.name.strip()
-    mapping = {
-        "IsolationWidth_MS2_Median": "MS2 isolation width — median",
-        "IsolationWidth_MS2_Min": "MS2 isolation width — min",
-        "IsolationWidth_MS2_Max": "MS2 isolation width — max",
-        "IsolationWidth_MS2_Count": "MS2 isolation width — observations",
-        "IsolationWidth_MS2_Fraction": "MS2 isolation width — fraction",
-    }
-    if name in mapping:
-        return mapping[name]
+    if metric.accession == "MS:4000195" and endpoint:
+        label = "minimum" if endpoint == "lower" else "maximum"
+        return f"DIA isolation window width — {label}"
+    if metric.accession == "MS:4000222" and endpoint:
+        return f"Observed MS1 m/z bounds — {endpoint}"
     if name == "ScanWindow_MS1" and endpoint:
         return f"MS1 scan window {endpoint} limit"
     if name == "ObservedMzRange_MS1" and endpoint:
@@ -460,8 +492,10 @@ def _metric_unit_suffix(metric: MzQCMetric) -> str | None:
     if metric.unit_name:
         return metric.unit_name
     name = metric.name
-    if name.startswith("IsolationWidth_MS2_"):
+    if metric.accession == "MS:4000195":
         return "Th"
+    if metric.accession == "MS:4000222":
+        return "m/z"
     if name.startswith(("ScanWindow_", "ObservedMzRange_", "PrecursorMzRange_")):
         return "m/z"
     if name.startswith(("RTRange_", "RetentionTimeRange_")):
@@ -797,6 +831,29 @@ def _metric_scalar_named(run: MzQCRun, name: str) -> float | None:
     return None if value is None else float(value)
 
 
+def _run_duration_seconds(run: MzQCRun) -> float | None:
+    """Read producer-provided duration in seconds; accept legacy-labelled files."""
+    for accession in ("MS:4000067", "MS:4000053"):
+        for metric in run.metrics:
+            if metric.accession != accession:
+                continue
+            if (
+                accession == "MS:4000053"
+                and metric.name.casefold() != "chromatography duration"
+            ):
+                continue
+            if metric.unit_accession not in (None, "UO:0000010"):
+                continue
+            if metric.unit_accession is None and metric.unit_name and (
+                metric.unit_name.casefold() not in ("second", "seconds", "s")
+            ):
+                continue
+            value = _finite_number(metric.value)
+            if value is not None and isfinite(float(value)):
+                return float(value)
+    return None
+
+
 def _experiment_group_features(
     runs: list[MzQCRun],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -820,8 +877,7 @@ def _experiment_group_features(
             "fragment": fragment_value,
             "fragment_unit": fragment_unit,
             "fragment_regime": row.get("fragment_resolution_regime", ""),
-            "rt": _metric_scalar_named(run, "chromatography duration"),
-            "isolation": _metric_scalar_named(run, "IsolationWidth_MS2_Median"),
+            "rt": _run_duration_seconds(run),
             "ms1": _metric_scalar_named(run, "number of MS1 spectra"),
             "ms2": _metric_scalar_named(run, "number of MS2 spectra"),
             "instrument": run.instrument or "",
@@ -834,7 +890,7 @@ def _scaled_feature_matrix(
     names: list[str], features: dict[str, dict[str, Any]]
 ) -> tuple[np.ndarray, list[str]] | None:
     """Build a robustly scaled quantitative matrix with bounded median imputation."""
-    feature_keys = ("precursor", "fragment", "rt", "isolation", "ms1", "ms2")
+    feature_keys = ("precursor", "fragment", "rt", "ms1", "ms2")
     minimum_observed = max(3, ceil(len(names) * 0.80))
     selected: list[str] = []
     columns: list[list[float]] = []
@@ -894,15 +950,13 @@ def _supported_multivariate_partition(
         "precursor": 1.50,
         "fragment": 1.50,
         "rt": 1.15,
-        "isolation": 1.20,
         "ms1": 1.25,
         "ms2": 1.25,
     }
     display_names = {
         "precursor": "precursor tolerance",
         "fragment": "fragment tolerance",
-        "rt": "chromatography duration",
-        "isolation": "MS2 isolation width",
+        "rt": "MS run duration",
         "ms1": "MS1 spectra",
         "ms2": "MS2 spectra",
     }
@@ -1073,7 +1127,6 @@ def _experiment_group_summary(
         if "fragment_tolerance_da" in row
     ]
     durations = _numeric_group_values(group, features, "rt")
-    isolation = _numeric_group_values(group, features, "isolation")
 
     summary: dict[str, Any] = {"files": len(group)}
     if precursor:
@@ -1106,8 +1159,6 @@ def _experiment_group_summary(
                 "run_duration_span_s": max(durations) - min(durations),
             }
         )
-    if isolation:
-        summary["isolation_median_th"] = median(isolation)
 
     instruments = sorted(
         {
@@ -1773,8 +1824,7 @@ class MzQCModule(BaseMultiqcModule):
                     {
                         "precursor": "precursor tolerance",
                         "fragment": "fragment tolerance",
-                        "rt": "chromatography duration",
-                        "isolation": "MS2 isolation width",
+                        "rt": "MS run duration",
                         "ms1": "MS1 spectra",
                         "ms2": "MS2 spectra",
                     }[feature]
@@ -1809,6 +1859,7 @@ class MzQCModule(BaseMultiqcModule):
             "instrument": {"title": "Instrument"},
             "acquisition_method": {"title": "Acquisition method"},
             "software": {"title": "Analysis software"},
+            "faims_cv": {"title": "FAIMS compensation voltage (metadata)"},
             "provenance": {"title": "Provenance / evidence"},
         }
         self.add_section(
@@ -1883,6 +1934,7 @@ class MzQCModule(BaseMultiqcModule):
                 "instrument": run.instrument or "",
                 "acquisition_method": run.acquisition_method or "",
                 "software": run.analysis_software or "",
+                "faims_cv": run.faims_compensation_voltages or "",
                 "provenance": run.provenance or "",
             }
         return result
@@ -1989,11 +2041,6 @@ class MzQCModule(BaseMultiqcModule):
                 "run_duration_span_s": {
                     "title": "Run duration span",
                     "suffix": " s",
-                    "format": "{:,.2f}",
-                },
-                "isolation_median_th": {
-                    "title": "MS2 isolation width — median",
-                    "suffix": " Th",
                     "format": "{:,.2f}",
                 },
                 "instrument": {"title": "Instrument"},
@@ -2505,9 +2552,9 @@ class MzQCModule(BaseMultiqcModule):
             "number of ms1 spectra",
             "number of ms2 spectra",
             "number of spectra",
-            "chromatography duration",
-            "scan rate",
-            "acquisition cycle count",
+            "ms run duration",
+            "chromatography duration",  # Historical mzQC label.
+            "dia isolation window count",
             "mass error",
             "precision",
         )

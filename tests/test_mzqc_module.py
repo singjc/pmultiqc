@@ -32,7 +32,6 @@ from pmultiqc.modules.mzqc.mzqc import (
     _run_group_assignments,
 )
 
-
 FIXTURE_DIR = Path("tests/resources/mzqc")
 
 
@@ -357,8 +356,8 @@ def test_mass_shift_heatmap_is_bounded_and_uses_mass_only_axis_labels():
     labels = list(report["heatmap_data"]["run.raw"])
 
     _check(len(labels) == 12)
-    _check(all((label.endswith(' Da') for label in labels)))
-    _check(all(('Candidate' not in label for label in labels)))
+    _check(all(label.endswith(' Da') for label in labels))
+    _check(all('Candidate' not in label for label in labels))
     _check(report['classification_plot'] == {'run.raw': {'Modification-compatible': 15}})
 
 
@@ -798,8 +797,7 @@ def _synthetic_tolerance_run(
                 "mass error estimator diagnostics",
                 {"fragment_resolution_regime": "high-resolution"},
             ),
-            MzQCMetric("MS:4000053", "chromatography duration", rt_seconds),
-            MzQCMetric("QCPRIDE:ISO", "IsolationWidth_MS2_Median", 1.6),
+            MzQCMetric("MS:4000067", "MS run duration", rt_seconds),
         ),
     )
 
@@ -830,10 +828,10 @@ def test_run_group_detection_finds_supported_two_population_tolerance_split():
     assignments, summaries, evidence = _run_group_assignments(runs)
 
     _check(len(summaries) == 2)
-    _check(len(set((assignments[name] for name in assignments if name.startswith('low-')))) == 1)
-    _check(len(set((assignments[name] for name in assignments if name.startswith('high-')))) == 1)
+    _check(len({assignments[name] for name in assignments if name.startswith('low-')}) == 1)
+    _check(len({assignments[name] for name in assignments if name.startswith('high-')}) == 1)
     _check(assignments['low-0'] != assignments['high-0'])
-    _check(any(('fragment tolerance' in item for item in evidence)))
+    _check(any('fragment tolerance' in item for item in evidence))
     _check(summaries[assignments['low-0']]['fragment_common'] == pytest.approx(6.5))
     _check(summaries[assignments['high-0']]['fragment_common'] == pytest.approx(23.5))
 
@@ -851,7 +849,7 @@ def test_run_group_detection_does_not_promote_singleton_outlier():
     _check(evidence == [])
 
 
-def test_experiment_group_detection_uses_chromatography_duration():
+def test_experiment_group_detection_uses_ms_run_duration():
     runs = [
         *[_synthetic_tolerance_run(f"short-{index}", 12.0, 5400.0) for index in range(4)],
         *[_synthetic_tolerance_run(f"long-{index}", 12.0, 7200.0) for index in range(4)],
@@ -861,7 +859,7 @@ def test_experiment_group_detection_uses_chromatography_duration():
 
     _check(len(summaries) == 2)
     _check(assignments['short-0'] != assignments['long-0'])
-    _check(any(('chromatography duration' in item for item in evidence)))
+    _check(any('MS run duration' in item for item in evidence))
 
 
 def test_experiment_group_detection_can_refine_tolerance_group_by_rt():
@@ -876,8 +874,8 @@ def test_experiment_group_detection_can_refine_tolerance_group_by_rt():
     _check(len(summaries) == 3)
     _check(assignments['wide-0'] != assignments['narrow-0'])
     _check(assignments['narrow-0'] != assignments['long-0'])
-    _check(any(('chromatography duration' in item for item in evidence)))
-    _check(any(('fragment tolerance' in item for item in evidence)))
+    _check(any('MS run duration' in item for item in evidence))
+    _check(any('fragment tolerance' in item for item in evidence))
 
 
 def test_experiment_group_pca_uses_multifeature_evidence_and_group_colours():
@@ -892,12 +890,12 @@ def test_experiment_group_pca_uses_multifeature_evidence_and_group_colours():
     _check(set(plot_data) == set(assignments.values()))
     _check({'fragment', 'rt'}.issubset(features))
     _check(variance is not None)
-    _check(sum((len(points) for points in plot_data.values())) == 8)
+    _check(sum(len(points) for points in plot_data.values()) == 8)
     colours = {
         group: {point["color"] for point in points}
         for group, points in plot_data.items()
     }
-    _check(all((len(values) == 1 for values in colours.values())))
+    _check(all(len(values) == 1 for values in colours.values()))
     _check(len({next(iter(values)) for values in colours.values()}) == len(colours))
 
 
@@ -1009,9 +1007,10 @@ def test_beta_prevalence_probability_matches_v4_single_run_boundary():
 
 
 def test_cv_backed_metric_display_titles_are_compact():
-    isolation = MzQCMetric("QCPRIDE:ISO", "IsolationWidth_MS2_Median", 1.6)
-    scan = MzQCMetric("QCPRIDE:SCAN", "ScanWindow_MS1", [350.0, 1800.0])
+    widths = MzQCMetric("MS:4000195", "DIA isolation window m/z widths", [10.0, 20.0])
+    observed = MzQCMetric("MS:4000222", "MS1 observed m/z bounds", [350.0, 1800.0])
 
-    _check(_metric_display_title(isolation) == 'MS2 isolation width — median')
-    _check(_metric_display_title(scan, 'lower') == 'MS1 scan window lower limit')
-    _check(_metric_display_title(scan, 'upper') == 'MS1 scan window upper limit')
+    _check(_metric_display_title(widths, 'lower') == 'DIA isolation window width — minimum')
+    _check(_metric_display_title(widths, 'upper') == 'DIA isolation window width — maximum')
+    _check(_metric_display_title(observed, 'lower') == 'Observed MS1 m/z bounds — lower')
+    _check(_metric_display_title(observed, 'upper') == 'Observed MS1 m/z bounds — upper')
